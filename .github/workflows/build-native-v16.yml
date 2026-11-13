@@ -1,8 +1,9 @@
 name: Build Sovereign Serve Native v1.6
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
+    types: [opened, reopened, synchronize]
     paths:
       - 'native-v16/**'
 
@@ -15,6 +16,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - uses: actions/setup-java@v4
         with:
