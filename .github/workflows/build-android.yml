@@ -6,105 +6,128 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-native-v16:
+  build-debug-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    steps:
-      - name: Check Out Native v1.6 Build Branch
-        uses: actions/checkout@v4
-        with:
-          ref: agent/sovereign-serve-v16-build
-          fetch-depth: 0
 
-      - name: Publish Run ID
+    steps:
+      - name: Check Out Build Package
+        uses: actions/checkout@v4
+
+      - name: Verify Uploaded Source Package
         shell: bash
         run: |
           set -euo pipefail
-          printf '%s\n' "$GITHUB_RUN_ID" > native-v16/run-id.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add native-v16/run-id.txt
-          git commit -m "Record v1.6 build run $GITHUB_RUN_ID" || true
-          git push origin HEAD:agent/sovereign-serve-v16-build
+          test -f sovereign-source.zip || {
+            echo "ERROR: sovereign-source.zip is missing from the repository root."
+            exit 1
+          }
+          unzip -t sovereign-source.zip
 
-      - name: Set Up Java 17
+      - name: Extract Sovereign Serve Source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf source
+          mkdir -p source
+          unzip -q sovereign-source.zip -d source
+          test -f source/package.json
+          test -f source/native/java/NativePdfPlugin.java
+          test -f source/scripts/prepare_android.py
+
+      - name: Set Up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set Up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "21"
 
-      - name: Set Up Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
+      - name: Set Up Python
+        uses: actions/setup-python@v5
         with:
-          gradle-version: '8.13'
+          python-version: "3.12"
 
-      - name: Reconstruct Native Source
+      - name: Install Pnpm
         shell: bash
         run: |
           set -euo pipefail
-          cat native-v16/parts/* > /tmp/source.b64
-          base64 -d /tmp/source.b64 > /tmp/source.zip
-          echo "e67b2dad735e04c24b00bb4f55296a70e3d4af3008c3c486e87b6d837a247c8c  /tmp/source.zip" | sha256sum -c -
-          rm -rf native-v16/buildsrc
-          mkdir -p native-v16/buildsrc
-          unzip -q /tmp/source.zip -d native-v16/buildsrc
-          sed -i 's/ package="com.kaiserin.sovereignserve"//' native-v16/buildsrc/SovereignStandard/app/src/main/AndroidManifest.xml
+          corepack enable
+          corepack prepare pnpm@10.13.1 --activate
+          pnpm config set registry https://registry.npmjs.org/
+          pnpm --version
 
-      - name: Build Unsigned Release APK
-        id: compile
-        working-directory: native-v16/buildsrc/SovereignStandard
+      - name: Install Build Dependencies
+        working-directory: source
         shell: bash
         run: |
-          set +e
-          gradle --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee /tmp/native-build.log
-          status=${PIPESTATUS[0]}
-          exit "$status"
+          set -euo pipefail
+          rm -rf node_modules pnpm-lock.yaml
+          pnpm install --no-frozen-lockfile --reporter=append-only
+          python -m pip install --disable-pip-version-check pillow
 
-      - name: Publish Compiler Error
+      - name: Create Capacitor Android Project
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf android
+          pnpm exec cap add android
+
+      - name: Apply Sovereign Serve Native Configuration
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/prepare_android.py
+
+      - name: Synchronize Web Assets And Plugins
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm exec cap sync android
+
+      - name: Verify Android Project
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f android/gradlew
+          test -f android/settings.gradle
+          test -f android/app/build.gradle
+          test -f android/app/src/main/java/com/kaiserinconsulting/sovereignserve/NativePdfPlugin.java
+          ! grep -q "PrintDocumentAdapter.LayoutResultCallback" android/app/src/main/java/com/kaiserinconsulting/sovereignserve/NativePdfPlugin.java
+          chmod +x android/gradlew
+
+      - name: Build Debug APK
+        working-directory: source/android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Upload Installable Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sovereign-Serve-1.0.3-Debug-APK
+          path: source/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Build Reports On Failure
         if: failure()
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            grep -E -B 4 -A 12 "(^e: |error:|FAILURE: Build failed|What went wrong|Execution failed|Caused by:)" /tmp/native-build.log || true
-            echo
-            echo "---- LAST 160 LINES ----"
-            tail -n 160 /tmp/native-build.log
-          } > native-v16/build-error.txt
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add native-v16/build-error.txt
-          git commit -m "Capture v1.6 compiler error $GITHUB_RUN_ID" || true
-          git push origin HEAD:agent/sovereign-serve-v16-build
-
-      - name: Upload Unsigned APK
-        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Sovereign-Serve-v1.6-unsigned
-          path: native-v16/buildsrc/SovereignStandard/app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Package Android Signing Tools
-        if: success()
-        shell: bash
-        run: |
-          set -euo pipefail
-          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
-          mkdir -p /tmp/sign-tools
-          cp "$BT/lib/apksigner.jar" /tmp/sign-tools/
-          cp "$BT/zipalign" /tmp/sign-tools/
-          cp "$BT/aapt2" /tmp/sign-tools/
-
-      - name: Upload Android Signing Tools
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-sign-tools
-          path: /tmp/sign-tools/*
-          if-no-files-found: error
-          retention-days: 1
+          name: Sovereign-Serve-Build-Reports
+          path: |
+            source/android/build/reports/**
+            source/android/app/build/reports/**
+          if-no-files-found: ignore
+          retention-days: 7
