@@ -1,14 +1,13 @@
 name: Build Sovereign Serve Native v1.6
 
 on:
-  pull_request_target:
+  push:
     branches: [main]
-    types: [opened, reopened, synchronize]
     paths:
-      - 'native-v16/**'
+      - '.github/workflows/build-native-v16.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -17,7 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: agent/sovereign-serve-v16-build
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -35,6 +35,7 @@ jobs:
           cat native-v16/parts/* > /tmp/source.b64
           base64 -d /tmp/source.b64 > /tmp/source.zip
           echo "e67b2dad735e04c24b00bb4f55296a70e3d4af3008c3c486e87b6d837a247c8c  /tmp/source.zip" | sha256sum -c -
+          rm -rf native-v16/buildsrc
           mkdir -p native-v16/buildsrc
           unzip -q /tmp/source.zip -d native-v16/buildsrc
 
@@ -43,9 +44,17 @@ jobs:
         shell: bash
         run: gradle --no-daemon --stacktrace :app:assembleRelease
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Sovereign-Serve-v1.6-unsigned
-          path: native-v16/buildsrc/SovereignStandard/app/build/outputs/apk/release/*.apk
-          if-no-files-found: error
-          retention-days: 1
+      - name: Publish unsigned APK to build branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p native-v16/output
+          APK="$(find native-v16/buildsrc/SovereignStandard/app/build/outputs/apk/release -name '*.apk' -type f | head -1)"
+          test -n "$APK"
+          cp "$APK" native-v16/output/Sovereign-Serve-v1.6-unsigned.apk
+          rm -rf native-v16/buildsrc
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add native-v16/output/Sovereign-Serve-v1.6-unsigned.apk
+          git commit -m "Build Sovereign Serve v1.6 unsigned APK"
+          git push origin HEAD:agent/sovereign-serve-v16-build
