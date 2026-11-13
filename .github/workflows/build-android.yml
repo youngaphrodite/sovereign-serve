@@ -51,6 +51,7 @@ jobs:
           rm -rf native-v16/buildsrc
           mkdir -p native-v16/buildsrc
           unzip -q /tmp/source.zip -d native-v16/buildsrc
+          sed -i 's/ package="com.kaiserin.sovereignserve"//' native-v16/buildsrc/SovereignStandard/app/src/main/AndroidManifest.xml
 
       - name: Build Unsigned Release APK
         id: compile
