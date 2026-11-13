@@ -53,14 +53,57 @@ jobs:
           unzip -q /tmp/source.zip -d native-v16/buildsrc
 
       - name: Build Unsigned Release APK
+        id: compile
         working-directory: native-v16/buildsrc/SovereignStandard
         shell: bash
-        run: gradle --no-daemon --stacktrace :app:assembleRelease
+        run: |
+          set +e
+          gradle --no-daemon --stacktrace :app:assembleRelease 2>&1 | tee /tmp/native-build.log
+          status=${PIPESTATUS[0]}
+          exit "$status"
+
+      - name: Publish Compiler Error
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            grep -E -B 4 -A 12 "(^e: |error:|FAILURE: Build failed|What went wrong|Execution failed|Caused by:)" /tmp/native-build.log || true
+            echo
+            echo "---- LAST 160 LINES ----"
+            tail -n 160 /tmp/native-build.log
+          } > native-v16/build-error.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add native-v16/build-error.txt
+          git commit -m "Capture v1.6 compiler error $GITHUB_RUN_ID" || true
+          git push origin HEAD:agent/sovereign-serve-v16-build
 
       - name: Upload Unsigned APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Sovereign-Serve-v1.6-unsigned
           path: native-v16/buildsrc/SovereignStandard/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Package Android Signing Tools
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)"
+          mkdir -p /tmp/sign-tools
+          cp "$BT/lib/apksigner.jar" /tmp/sign-tools/
+          cp "$BT/zipalign" /tmp/sign-tools/
+          cp "$BT/aapt2" /tmp/sign-tools/
+
+      - name: Upload Android Signing Tools
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-sign-tools
+          path: /tmp/sign-tools/*
           if-no-files-found: error
           retention-days: 1
